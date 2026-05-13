@@ -28,29 +28,30 @@ Or add to your PATH:
 ln -s "$PWD/laposte_cli.py" ~/.local/bin/laposte-cli
 ```
 
-## Login (paste cookies)
+## Login (no copy-paste)
 
-The CLI reuses your existing laposte.fr browser session. There's no OAuth
-flow exposed by La Poste, so we copy cookies from DevTools once.
+The CLI reuses your existing laposte.fr browser session by reading cookies
+directly from your browser's local store via
+[`browser_cookie3`](https://github.com/borisbabic/browser_cookie3).
 
 ```bash
-laposte-cli login
+laposte-cli login                  # defaults to chrome
+laposte-cli login --browser firefox
 ```
 
-Then:
+On macOS Chrome, the first read pops a Keychain prompt to allow access to
+Chrome's encrypted cookie file — accept once and you're done. The CLI only
+stores your *browser preference* in `~/.config/laposte-cli/config.json`;
+cookies are re-read live on every command (so they're always fresh).
 
-1. Log in to https://www.laposte.fr in your browser.
-2. Open DevTools → **Network** → click on any request to `www.laposte.fr` →
-   right-click → **Copy → Copy as cURL**.
-3. Paste it into the prompt (multi-line OK; finish with an empty line).
-4. The CLI extracts the `Cookie:` header and stores it in
-   `~/.config/laposte-cli/config.json` (mode `0600`).
+Supported browsers: `chrome`, `firefox`, `safari`, `edge`, `brave`,
+`chromium`, `opera`, `arc`.
 
 Verify:
 
 ```bash
-laposte-cli whoami
-laposte-cli addresses
+laposte-cli whoami       # prints userId + active CEL draft id
+laposte-cli addresses    # prints saved sender postal addresses
 ```
 
 ## Send a letter
@@ -103,19 +104,31 @@ The website's "Rédiger un texte" flow appears to be broken (the
 
 ## How it works (TL;DR for hackers)
 
-| Endpoint | Used for |
-|---|---|
-| `POST /cel/.../e-service/cel/upload` (multipart) | Upload a PDF, returns a doc descriptor with `id`. |
-| `POST /cel/sending/lpelPart/{userId}` | Sync the full draft (options + content + addresses). Server echoes prices. |
-| `GET /cel/address/sercadia/check?streetName=&place=` | RNVP-certify an address, returns the `ceaid` (La Poste's address code). |
-| `GET /cel/address/lpelPart/account/profiles/CURRENT/postal-addresses` | List the user's saved sender addresses. |
-| `POST /cel/.../e-service/cel/recipients` + `/options` + `/users/current/carts/current` | Materialize the draft into a cart bundle. |
-| `https://data.geopf.fr/geocodage/search` (public) | Address autocomplete (BAN/IGN). Used for free-text recipients. |
+The CLI mirrors what the Nuxt SPA at
+`/envoi-courrier-en-ligne/parcours/creer-lettre` does, in this order:
 
-The full cart-creation payload (`POST .../users/current/carts/current`)
-hasn't been fully reverse-engineered yet — V1 sends empty JSON and relies
-on the server picking up state from the prior `/sending` sync. If the
-payload turns out to be required, we'll fix it in V1.1.
+| Step | Endpoint |
+|---|---|
+| Read cookies | `browser_cookie3.chrome(domain_name="laposte.fr")` (includes Keycloak SSO cookies, HttpOnly ones too) |
+| Keep-alive | `GET /cel/api/ping` (refreshes the session token before TS\* cookies rotate) |
+| Sender addresses | `GET /cel/address/lpelPart/account/profiles/CURRENT/postal-addresses` (dict keyed by postalId) |
+| RNVP cert recipient | `GET /cel/address/sercadia/check?streetName=&place={CP}+{VILLE}` (returns `[{ceaid, ...}]`) |
+| Wipe old draft | `DELETE /cel/sending/lpelPart/{userId}` (idempotent) |
+| Create + upload | `POST /cel/.../e-service/cel/upload` (multipart, **no sendingId on first call** — server allocates one) |
+| Sync state | `POST /cel/sending/lpelPart/{userId}` (full draft JSON) |
+| Push recipients | `POST /cel/.../e-service/cel/recipients` body `{addresses, sendingId, postageType}` (returns `recipients[0].id`) |
+| Compute price | `POST /cel/.../e-service/cel/price` (celConfigurationWsDTO with sheetsCount) |
+| Materialize cart | `POST /cel/.../e-service/cel/users/current/carts/current` (addEServiceToCart item) |
+| Pay | User clicks at `https://www.laposte.fr/checkout/recapitulatif` |
+
+The address-shape gotcha: `/sending` uses `city/zipCode/country=FR` flat,
+while `/recipients` + `/price` + cart use `town/postalCode/country={isocode:"FR"}`
+nested. We translate between the two with `_to_api_address()`.
+
+The sendingId gotcha: it's a server-issued UUID that lives in a separate
+upload-tracking store. Posting a client-generated UUID via `/sending` is
+echoed back but **doesn't register** it for `/upload` — the first upload
+must omit the field and read the allocated UUID from the response.
 
 ## Roadmap
 

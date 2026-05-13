@@ -5,6 +5,7 @@
 #     "click>=8.1",
 #     "curl_cffi>=0.7",
 #     "rich>=13.0",
+#     "browser_cookie3>=0.20",
 # ]
 # ///
 """La Poste CLI — send registered (LREL) or priority (LEL) mail from the terminal.
@@ -27,6 +28,7 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import unquote, urlencode
 
+import browser_cookie3
 import click
 from curl_cffi import CurlMime, requests
 from rich.console import Console
@@ -68,29 +70,122 @@ DEFAULT_UA = (
 POSTAGE_TYPES = {"recommande": "LREL", "lrel": "LREL", "lettre-rouge": "LEL", "lel": "LEL"}
 
 
-# --- Config ------------------------------------------------------------------
+# --- Config + browser cookie extraction --------------------------------------
+
+# Which browsers browser_cookie3 supports. We default to chrome which is what
+# 99% of users have; the user can override with `--browser firefox/safari/edge`
+# if their laposte.fr session lives somewhere else.
+SUPPORTED_BROWSERS = {
+    "chrome": "chrome",
+    "firefox": "firefox",
+    "safari": "safari",
+    "edge": "edge",
+    "brave": "brave",
+    "chromium": "chromium",
+    "opera": "opera",
+    "arc": "arc",
+}
 
 
 def load_config() -> dict:
-    """Return stored config, or empty dict if no login yet."""
+    """Return stored config (preferred browser etc.), or empty dict."""
     if not CONFIG_FILE.exists():
         return {}
     return json.loads(CONFIG_FILE.read_text())
 
 
 def save_config(config: dict) -> None:
-    """Persist config; chmod 600 since it holds session cookies."""
+    """Persist config; chmod 600 since it may hold preferences."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
     CONFIG_FILE.chmod(0o600)
 
 
+def get_browser_cookies(browser: str = "chrome") -> tuple[str, str]:
+    """Extract laposte.fr cookies from a local browser and return (header, userId).
+
+    Reads the cookie store of the named browser directly. On macOS Chrome this
+    pops a Keychain dialog the first time. We pull cookies for both
+    `laposte.fr` and `moncompte.laposte.fr` so the SSO bounce can complete
+    server-side without ever opening a browser.
+    """
+    fn = getattr(browser_cookie3, SUPPORTED_BROWSERS.get(browser, browser), None)
+    if fn is None:
+        raise click.ClickException(
+            f"Unknown browser '{browser}'. Try: {', '.join(SUPPORTED_BROWSERS)}"
+        )
+
+    jar = fn(domain_name="laposte.fr")
+    cookies = list(jar)
+    if not cookies:
+        raise click.ClickException(
+            f"No laposte.fr cookies in {browser}. Log in to laposte.fr in {browser} "
+            "first, then re-run."
+        )
+
+    # Build a Cookie header from the jar. Duplicates may exist across paths;
+    # the last one wins, which matches what the browser sends.
+    cookie_dict: dict[str, str] = {}
+    user_id: str | None = None
+    for c in cookies:
+        cookie_dict[c.name] = c.value
+        if c.name == "pa_user":
+            try:
+                user_id = json.loads(unquote(c.value)).get("id")
+            except Exception:
+                pass
+    if not user_id:
+        raise click.ClickException(
+            "Could not read pa_user cookie. Are you logged in to laposte.fr "
+            f"in {browser}?"
+        )
+    header = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+    return header, user_id
+
+
+def get_browser_jar(browser: str = "chrome"):
+    """Same as get_browser_cookies but returns the full CookieJar (for sessions)."""
+    fn = getattr(browser_cookie3, SUPPORTED_BROWSERS.get(browser, browser), None)
+    if fn is None:
+        raise click.ClickException(f"Unknown browser '{browser}'.")
+    return fn(domain_name="laposte.fr")
+
+
 def require_login() -> dict:
-    """Return loaded config, or raise a clean CLI error if not logged in."""
+    """Return a session bundle with cookies + userId pulled from the browser.
+
+    `cookies` is a CookieJar (not a header string) so curl_cffi can rotate
+    it from `Set-Cookie` responses. `sendingId` is the value of the
+    `lpel_cel` cookie — the active server-side draft handle.
+    """
     cfg = load_config()
-    if not cfg.get("cookies") or not cfg.get("userId"):
-        raise click.ClickException("Not logged in. Run 'laposte-cli login' first.")
-    return cfg
+    browser = cfg.get("browser", "chrome")
+    try:
+        jar = get_browser_jar(browser)
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"Could not read cookies from {browser}: {exc}. "
+            "Run 'laposte-cli login --browser <name>' to pick a different one."
+        )
+
+    user_id: str | None = None
+    sending_id: str | None = None
+    for c in jar:
+        if c.name == "pa_user":
+            try:
+                user_id = json.loads(unquote(c.value)).get("id")
+            except Exception:
+                pass
+        elif c.name == "lpel_cel":
+            sending_id = c.value
+    if not user_id:
+        raise click.ClickException(
+            f"Not logged in to laposte.fr in {browser}. Open laposte.fr "
+            "there, log in, then retry."
+        )
+    return {"cookies": jar, "userId": user_id, "sendingId": sending_id, "browser": browser}
 
 
 # --- Cookie helpers ----------------------------------------------------------
@@ -121,8 +216,15 @@ def extract_user_id(cookies: dict[str, str]) -> str | None:
 # --- HTTP session ------------------------------------------------------------
 
 
-def make_session(cookie_header: str) -> requests.Session:
-    """Build a curl_cffi session impersonating Chrome with our stored cookies."""
+def make_session(cookie_source: str | object) -> requests.Session:
+    """Build a curl_cffi session impersonating Chrome with our cookies.
+
+    Accepts either a raw `Cookie:` header string (for the legacy --cookie-header
+    path) or a CookieJar-like iterable of `Cookie` objects (the live extraction
+    path). Setting cookies via `s.cookies.set(...)` rather than the header lets
+    curl_cffi auto-rotate them from `Set-Cookie` responses — required because
+    La Poste's F5 BIG-IP TS* tokens have short TTLs and rotate per request.
+    """
     s = requests.Session(impersonate=TLS_IMPERSONATE)
     s.headers.update(
         {
@@ -131,9 +233,28 @@ def make_session(cookie_header: str) -> requests.Session:
             "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
             "Origin": BASE,
             "Referer": f"{BASE}/envoi-courrier-en-ligne/parcours/creer-lettre",
-            "Cookie": cookie_header,
         }
     )
+
+    if isinstance(cookie_source, str):
+        # Legacy: parse "name=value; name=value" into the jar.
+        for kv in cookie_source.split(";"):
+            kv = kv.strip()
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                s.cookies.set(k.strip(), v.strip(), domain=".laposte.fr")
+    else:
+        # Cookie jar from browser_cookie3: filter to laposte.fr (drop the
+        # moncompte.laposte.fr-scoped duplicates that would otherwise stomp
+        # the www.laposte.fr ones with last-wins semantics).
+        seen: set[str] = set()
+        for c in cookie_source:
+            if c.domain not in ("www.laposte.fr", ".laposte.fr", "laposte.fr"):
+                continue
+            if c.name in seen:
+                continue
+            s.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+            seen.add(c.name)
     return s
 
 
@@ -262,15 +383,20 @@ def upload_pdf(
     session: requests.Session,
     pdf_path: Path,
     *,
-    sending_id: str,
+    sending_id: str | None,
     postage_type: str,
     priority: int,
 ) -> dict:
     """Upload one PDF and return the document descriptor returned by the server.
 
-    Field order and names mirror the SPA's multipart body exactly: La Poste's
-    backend rejects requests where the `fileDocument` part isn't surrounded
-    by the other metadata fields in the expected sequence.
+    Pass `sending_id=None` on the very first upload of a session — the server
+    allocates a fresh draft and returns its UUID in the response (`sendingId`
+    field). Subsequent uploads must pass that same UUID; the SPA omits the
+    `sendingId` form field when it's null and includes it otherwise, which
+    is what we mirror here.
+
+    Returns the server's celDocumentResponseWsDTO: `{id, name, pagesCount,
+    sheetsCount, priority, sendingId, size, source, type, ...}`.
     """
     pages_count = _pdf_page_count(pdf_path)
     size = pdf_path.stat().st_size
@@ -288,7 +414,8 @@ def upload_pdf(
     mp.addpart(name="postageType", data=postage_type)
     mp.addpart(name="source", data="upload")
     mp.addpart(name="totalSize", data=str(size))
-    mp.addpart(name="sendingId", data=sending_id)
+    if sending_id is not None:
+        mp.addpart(name="sendingId", data=sending_id)
     mp.addpart(name="frontPostageType", data=postage_type)
 
     r = session.post(UPLOAD_URL, multipart=mp, timeout=120)
@@ -296,10 +423,7 @@ def upload_pdf(
         raise click.ClickException(
             f"Upload failed for {pdf_path.name}: {r.status_code} {r.text[:300]}"
         )
-    try:
-        return r.json()
-    except Exception:
-        return {"raw": r.text[:500]}
+    return r.json()
 
 
 def _pdf_page_count(path: Path) -> int:
@@ -479,20 +603,181 @@ def sync_draft(session: requests.Session, user_id: str, draft: dict) -> dict:
     return r.json()
 
 
-def commit_to_cart(session: requests.Session) -> dict | None:
-    """Tell the server to materialize the current draft into a cart bundle.
+def calc_price(
+    session: requests.Session,
+    *,
+    documents: list[dict],
+    receivers: list[dict],
+    postage_type: str,
+    notice_of_receipt: bool,
+    postal_tracking: bool,
+    duplex: bool,
+    color: bool,
+    deposit_date: str,
+) -> dict:
+    """Ask the server to compute pricing for the current draft.
 
-    Sequence observed in the browser: /recipients then /options then /carts/current.
-    The bodies are not yet reverse-engineered; we try empty POSTs and surface
-    any error so we can iterate.
+    Sends a `celConfigurationWsDTO`. This also populates server-side state
+    (sheetsCount, totals) that cart creation reads later — skip it and
+    /carts/current 500s with a NullPointerException on getSheetsCount().
     """
-    for url in (RECIPIENTS_URL, OPTIONS_URL):
-        r = session.post(url, json={}, timeout=30)
-        logger.debug("POST %s -> %s %s", url, r.status_code, r.text[:200])
-        if not r.ok:
-            console.print(f"[yellow]Warning:[/yellow] {url} returned {r.status_code}: {r.text[:200]}")
+    from math import ceil
 
-    r = session.post(CART_CREATE_URL, json={}, timeout=60)
+    total_pages = sum((d.get("pagesCount") or 0) for d in documents)
+    total_files = len(documents)
+    duplex_sheets = sum(ceil((d.get("pagesCount") or 0) / 2) for d in documents)
+    sheets_count = duplex_sheets if duplex else total_pages
+    # The SPA toggles addressSheet automatically based on size and presence of
+    # a letter document; for an upload-only flow we mirror its logic.
+    address_sheet = total_files > 0 and sheets_count >= 4
+
+    config = {
+        "type": "celConfigurationWsDTO",
+        "postageType": postage_type,
+        "noticeOfReceipt": notice_of_receipt,
+        "postalTracking": postal_tracking,
+        "duplexPrinting": duplex,
+        "colorPrinting": color,
+        "depositDate": deposit_date,
+        "scheduledDate": "",
+        "destinationAddresses": [_to_api_address(r) for r in receivers if not r.get("highlight")],
+        "pagesCount": total_pages,
+        "sheetsCount": sheets_count,
+        "documentsCount": total_files,
+        "addressSheet": address_sheet,
+        "departureCountry": "FR",
+        "hasInternationalAddresses": False,
+        "limitRecipientCount": 200,
+        "canCanceled": False,
+        "deleteContent": False,
+        "uploadImageDisabled": False,
+    }
+    r = session.post(PRICE_URL, json=config, timeout=30)
+    if not r.ok:
+        raise click.ClickException(f"Price calc failed: {r.status_code} {r.text[:300]}")
+    return r.json()
+
+
+def _to_api_address(r: dict) -> dict:
+    """Translate our draft-shaped receiver to the API shape /recipients wants.
+
+    Matches the SPA's `normalizeLibAddressToBody`: `town` not `city`,
+    `postalCode` not `zipCode`, `pobox` not `additionalStreetName`,
+    `country: {isocode}` nested, civility-tokens are "M."/"Mme".
+    """
+    title = "M." if r.get("sex") == "MALE" else "Mme" if r.get("sex") == "FEMALE" else ""
+    return {
+        "title": title,
+        "firstName": r.get("firstName") or "",
+        "lastName": r.get("lastName") or "",
+        "companyName": r.get("companyName") or "",
+        "streetName": r.get("streetName") or "",
+        "pobox": r.get("additionalStreetName") or "",
+        "building": r.get("additionalBuilding") or "",
+        "appartment": r.get("additionalFloor") or "",
+        "remarks": r.get("additionalKeypad") or "",
+        "postalCode": r.get("zipCode") or "",
+        "town": r.get("city") or "",
+        "country": {"isocode": r.get("country") or "FR"},
+        "b2b": r.get("isCompany", False),
+        "ceaid": r.get("ceaid"),
+        "ceaidLine6": r.get("ceaidLine6"),
+        "rnvpChecked": r.get("rnvpChecked", False),
+        "rnvpCheckMethod": r.get("rnvpCheckMethod", ""),
+        "rnvpValidation": r.get("rnvpValidation", ""),
+    }
+
+
+def push_recipients(
+    session: requests.Session,
+    receivers: list[dict],
+    *,
+    sending_id: str,
+    postage_type: str,
+) -> str | None:
+    """Push recipients to the server-side draft.
+
+    Required body: `{addresses, sendingId, postageType}`. Returns the
+    server-issued `recipientId` so the cart bundle can reference this group.
+    """
+    body = {
+        "addresses": [_to_api_address(r) for r in receivers],
+        "sendingId": sending_id,
+        "postageType": postage_type,
+    }
+    r = session.post(RECIPIENTS_URL, json=body, timeout=30)
+    if not r.ok:
+        console.print(
+            f"[yellow]Warning:[/yellow] /recipients returned {r.status_code}: {r.text[:200]}"
+        )
+        return None
+    # Response shape: {type, recipients: [{id, customId, ...}], sendingId}.
+    # The recipientId we need is `recipients[0].id`.
+    try:
+        recs = (r.json() or {}).get("recipients") or []
+        return recs[0].get("id") if recs else None
+    except Exception:
+        return None
+
+
+def commit_to_cart(
+    session: requests.Session,
+    *,
+    sending_id: str,
+    recipient_id: str | None,
+    documents: list[dict],
+    receivers: list[dict],
+    sender: dict | None,
+    postage_type: str,
+    notice_of_receipt: bool,
+    postal_tracking: bool,
+    duplex: bool,
+    color: bool,
+    deposit_date: str,
+    letter_name: str = "Courrier",
+) -> dict | None:
+    """Materialize the current draft into a cart bundle.
+
+    Posts an `addEServiceToCart` item shaped like the SPA's `occCel` builder:
+    documentsConfig, destinationAddresses, postageType, etc. plus the
+    sender's departureAddress when present. Server takes a few seconds and
+    returns the cart payload with a `celBundleId`.
+    """
+    from math import ceil
+
+    total_pages = sum((d.get("pagesCount") or 0) for d in documents)
+    total_files = len(documents)
+    sheets_count = (
+        sum(ceil((d.get("pagesCount") or 0) / 2) for d in documents)
+        if duplex else total_pages
+    )
+    address_sheet = total_files > 0 and sheets_count >= 4
+
+    item = {
+        "fields": "LIGHT",
+        "letterName": letter_name,
+        "recipientId": recipient_id or "",
+        "sendingId": sending_id,
+        "documentsConfig": documents,
+        "postageType": postage_type,
+        "duplexPrinting": duplex,
+        "colorPrinting": color,
+        "depositDate": deposit_date,
+        "scheduledDate": "",
+        "destinationAddresses": [_to_api_address(r) for r in receivers if not r.get("highlight")],
+        "pagesCount": total_pages,
+        "sheetsCount": sheets_count,
+        "documentsCount": total_files,
+        "addressSheet": address_sheet,
+    }
+    if sender:
+        item["departureAddress"] = _to_api_address(sender)
+    if postage_type == "LREL":
+        item["noticeOfReceipt"] = notice_of_receipt
+    else:
+        item["postalTracking"] = postal_tracking
+
+    r = session.post(CART_CREATE_URL, json=item, timeout=120)
     if not r.ok:
         raise click.ClickException(f"Cart creation failed: {r.status_code} {r.text[:500]}")
     try:
@@ -515,48 +800,21 @@ def cli(debug: bool) -> None:
 
 
 @cli.command()
-def login() -> None:
-    """Save your laposte.fr browser cookies.
+@click.option(
+    "--browser",
+    default="chrome",
+    type=click.Choice(list(SUPPORTED_BROWSERS), case_sensitive=False),
+    help="Browser to read cookies from. Default: chrome.",
+)
+def login(browser: str) -> None:
+    """Set the browser used to read laposte.fr cookies.
 
-    Steps:
-      1. Log in to https://www.laposte.fr in your browser.
-      2. Open DevTools → Network → click any request to www.laposte.fr →
-         right-click → Copy → Copy as cURL.
-      3. Paste the curl here. We only keep the `Cookie:` header.
+    No copy-paste required: we read your existing browser session directly.
+    On macOS Chrome, the first read may pop a Keychain prompt to allow access
+    to Chrome's encrypted cookie store.
     """
-    console.print(
-        "[bold]Steps:[/bold]\n"
-        "  1. Log in to [cyan]https://www.laposte.fr[/cyan]\n"
-        "  2. DevTools → Network → any request to laposte.fr → "
-        "right-click → Copy → Copy as cURL\n"
-        "  3. Paste below. Empty line ends input.\n"
-    )
-    lines: list[str] = []
-    while True:
-        try:
-            line = input()
-        except EOFError:
-            break
-        if not line.strip() and lines:
-            break
-        lines.append(line)
-    blob = "\n".join(lines)
-
-    cookie_header = _extract_cookie_from_blob(blob)
-    if not cookie_header:
-        raise click.ClickException(
-            "No 'Cookie:' header found in input. Paste a full curl command, "
-            "or just the cookie header value."
-        )
-    cookies = parse_cookie_header(cookie_header)
-    user_id = extract_user_id(cookies)
-    if not user_id:
-        raise click.ClickException(
-            "Could not find pa_user cookie. Make sure you're logged in to "
-            "laposte.fr before copying the curl."
-        )
-
-    s = make_session(cookie_header)
+    header, user_id = get_browser_cookies(browser)
+    s = make_session(header)
     try:
         r = s.get(PING_URL, timeout=10)
         if not r.ok:
@@ -564,45 +822,37 @@ def login() -> None:
     except Exception as exc:
         console.print(f"[yellow]Warning:[/yellow] could not ping La Poste: {exc}")
 
-    save_config({"cookies": cookie_header, "userId": user_id})
-    console.print(f"[green]✓[/green] Logged in as user [cyan]{user_id}[/cyan]")
-    console.print(f"  Cookies saved to {CONFIG_FILE} (mode 0600)")
-
-
-def _extract_cookie_from_blob(blob: str) -> str | None:
-    """Pull the Cookie header out of a pasted curl command or raw string."""
-    # Look for `-b 'xxx'` or `-b "xxx"` or `--cookie 'xxx'`
-    import re
-
-    m = re.search(r"(?:-b|--cookie)\s+(['\"])(.+?)\1", blob, flags=re.DOTALL)
-    if m:
-        return m.group(2).strip()
-    # Look for `Cookie: xxx` header (e.g. from devtools "copy as fetch")
-    m = re.search(r"[Cc]ookie:\s*(.+?)(?:\n|$)", blob)
-    if m:
-        return m.group(1).strip()
-    # Fall back: if the whole blob looks like a cookie header, use it.
-    if "=" in blob and ";" in blob:
-        return blob.strip()
-    return None
+    save_config({"browser": browser})
+    console.print(
+        f"[green]✓[/green] Logged in as user [cyan]{user_id}[/cyan] via {browser}"
+    )
+    console.print(
+        f"  Preference saved to {CONFIG_FILE}. Cookies are read live from "
+        f"{browser} on each command — no copy/paste."
+    )
 
 
 @cli.command()
 def whoami() -> None:
-    """Show the user id of the saved session."""
+    """Show the active user id (read live from the browser)."""
     cfg = require_login()
-    console.print(f"User ID: [cyan]{cfg['userId']}[/cyan]")
-    console.print(f"Config:  {CONFIG_FILE}")
+    console.print(f"User ID:   [cyan]{cfg['userId']}[/cyan]")
+    console.print(f"Browser:   {cfg['browser']}")
+    sending = cfg.get("sendingId") or "<none yet>"
+    console.print(f"lpel_cel:  {sending}")
 
 
 @cli.command()
 def logout() -> None:
-    """Delete the saved cookies."""
+    """Remove the browser preference (does NOT log you out of laposte.fr)."""
     if CONFIG_FILE.exists():
         CONFIG_FILE.unlink()
-        console.print("[green]✓[/green] Logged out.")
+        console.print(
+            "[green]✓[/green] Cleared local preference. "
+            "To fully log out, do so in your browser."
+        )
     else:
-        console.print("Already logged out.")
+        console.print("Nothing to clear.")
 
 
 @cli.command()
@@ -706,6 +956,12 @@ def send(
     user_id = cfg["userId"]
     session = make_session(cfg["cookies"])
 
+    # Ping first to nudge the server to refresh the auth token before the
+    # F5/CEL-side TS* cookies expire under our feet (we've observed flaky 401s
+    # on /postal-addresses immediately after a fresh session when ping is
+    # skipped).
+    session.get(PING_URL, timeout=10)
+
     postage = POSTAGE_TYPES[fmt.lower()]
     deposit = deposit_date or today_dmy()
 
@@ -722,19 +978,31 @@ def send(
     for r in receivers:
         console.print(f"  → {r['fullName']} — {r['streetName']} {r['zipCode']} {r['city']} [dim](ceaid={r['ceaid']})[/dim]")
 
-    # 3. Upload PDFs. We re-use a random-ish sendingId (UUID) per session.
-    import uuid
+    # 3. Wipe any leftover server-side draft (idempotent — returns "No state
+    # to delete" if there's none), then upload PDFs. The first /upload omits
+    # the sendingId field; the server allocates a fresh draft and returns its
+    # UUID, which we thread into subsequent uploads (each new file bumps the
+    # `documentPriority` counter — the SPA starts at 2 and increments).
+    session.delete(f"{SENDING_URL}/{user_id}", timeout=15)
 
-    sending_id = str(uuid.uuid4())
-    console.print(f"[dim]Uploading {len(pdfs)} PDF(s)…[/dim]")
+    sending_id: str | None = None
     documents: list[dict] = []
-    for i, pdf in enumerate(pdfs, start=1):
+    console.print(f"[dim]Uploading {len(pdfs)} PDF(s)…[/dim]")
+    for i, pdf in enumerate(pdfs):
+        priority = (documents[-1]["priority"] + 1) if documents else 2
         doc = upload_pdf(
-            session, pdf, sending_id=sending_id, postage_type=postage, priority=i
+            session, pdf, sending_id=sending_id, postage_type=postage, priority=priority
         )
+        if sending_id is None:
+            sending_id = doc.get("sendingId")
         documents.append(doc)
-        pages = doc.get("pagesCount") or _pdf_page_count(pdf)
-        console.print(f"  → {pdf.name} ({pages} page(s))")
+        console.print(
+            f"  → {pdf.name} ({doc.get('pagesCount')} page(s), id={doc.get('id', '?')[:8]})"
+        )
+
+    if not sending_id:
+        raise click.ClickException("Upload succeeded but no sendingId in server response.")
+    console.print(f"[dim]Draft id: {sending_id[:8]}…[/dim]")
 
     # 4. Sync draft and get the server-side prices.
     draft = build_draft(
@@ -750,8 +1018,26 @@ def send(
         color=color,
         deposit_date=deposit,
     )
-    echoed = sync_draft(session, user_id, draft)
-    total = (echoed.get("options") or {}).get("totalPrice") or {}
+    sync_draft(session, user_id, draft)
+    # Push recipients before pricing — the server reads them when computing.
+    recipient_id = push_recipients(
+        session, receivers, sending_id=sending_id, postage_type=postage
+    )
+
+    # Compute pricing — this also populates server-side sheetsCount that
+    # cart creation reads later (without it /carts/current 500s).
+    price = calc_price(
+        session,
+        documents=documents,
+        receivers=receivers,
+        postage_type=postage,
+        notice_of_receipt=ar,
+        postal_tracking=tracking,
+        duplex=duplex,
+        color=color,
+        deposit_date=deposit,
+    )
+    total = price.get("totalPrice") or {}
     console.print(
         f"[bold]Tarif :[/bold] [green]{total.get('formattedValue', '?')}[/green] "
         f"({total.get('value', '?')} {total.get('currencyIso', 'EUR')})"
@@ -761,9 +1047,22 @@ def send(
         console.print("[yellow]Dry run — cart not created.[/yellow]")
         return
 
-    # 5. Materialize into cart.
-    console.print("[dim]Creating cart entry…[/dim]")
-    cart = commit_to_cart(session)
+    # 5. Materialize into cart (~5s, server generates the printable PDF).
+    console.print("[dim]Creating cart entry (server is generating PDFs, ~5s)…[/dim]")
+    cart = commit_to_cart(
+        session,
+        sending_id=sending_id,
+        recipient_id=recipient_id,
+        documents=documents,
+        receivers=receivers,
+        sender=sender,
+        postage_type=postage,
+        notice_of_receipt=ar,
+        postal_tracking=tracking,
+        duplex=duplex,
+        color=color,
+        deposit_date=deposit,
+    )
     if cart:
         bundle = cart.get("celBundleId") or cart.get("code") or "?"
         console.print(f"[green]✓[/green] Cart entry created ({bundle}).")

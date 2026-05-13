@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlencode
 
 import click
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 from rich.console import Console
 from rich.table import Table
 
@@ -157,14 +157,23 @@ def sercadia_certify(
     city: str,
     *,
     additional: str = "",
-) -> dict:
-    """Ask La Poste's SERCADIA to RNVP-certify an address and return the ceaid block."""
+) -> dict | None:
+    """Ask La Poste's SERCADIA to RNVP-certify an address and return the ceaid block.
+
+    Endpoint returns a JSON array of candidate matches (usually 1); we return
+    the first match or None if nothing came back.
+    """
     params = {"streetName": street, "place": f"{zip_code} {city}"}
     if additional:
         params["additionalStreetName"] = additional
     r = session.get(SERCADIA_URL, params=params, timeout=15)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if isinstance(data, list):
+        return data[0] if data else None
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 # --- Draft helpers -----------------------------------------------------------
@@ -176,12 +185,60 @@ def today_dmy() -> str:
 
 
 def fetch_sender_addresses(session: requests.Session) -> list[dict]:
-    """Return the user's saved sender (postal) addresses."""
+    """Return the user's saved sender (postal) addresses.
+
+    The endpoint returns a flat dict keyed by postalId; we adapt each entry
+    into the shape the /sending draft expects (id, streetName, zipCode,
+    city, isPrimary, label, firstName, lastName…) so callers don't have to
+    know about the two representations.
+    """
     r = session.get(ADDRESSES_URL, timeout=15)
     r.raise_for_status()
     data = r.json()
-    # Shape may be {postalAddresses: [...]} or {addresses: [...]} — try both.
-    return data.get("postalAddresses") or data.get("addresses") or []
+
+    raw_items: list[dict] = []
+    if isinstance(data, dict) and any(k.startswith("P-") for k in data):
+        raw_items = list(data.values())
+    elif isinstance(data, dict):
+        raw_items = data.get("postalAddresses") or data.get("addresses") or []
+    elif isinstance(data, list):
+        raw_items = data
+
+    addresses: list[dict] = []
+    for raw in raw_items:
+        line1 = (raw.get("address") or {}).get("line1", "").strip()
+        line4 = (raw.get("address") or {}).get("line4", "").strip()
+        # line1 looks like "M. CLEMENT WALTER" — split civility from names.
+        sex = "MALE"
+        names = line1.split()
+        if names and names[0].upper() in {"M.", "M", "MR", "MONSIEUR"}:
+            names = names[1:]
+        elif names and names[0].upper() in {"MME.", "MME", "MADAME", "MS", "MRS"}:
+            sex = "FEMALE"
+            names = names[1:]
+        first = names[0] if names else ""
+        last = " ".join(names[1:]) if len(names) > 1 else ""
+        addresses.append(
+            {
+                "id": raw.get("postalId"),
+                "label": raw.get("label", ""),
+                "streetName": line4,
+                "zipCode": raw.get("postalCode", ""),
+                "city": raw.get("locality", ""),
+                "country": raw.get("countryCode", "FR"),
+                "ceaid": raw.get("ceaId"),
+                "isCompany": raw.get("isBtoB", False),
+                "isPrimary": raw.get("isPrimary", False),
+                "firstName": first,
+                "lastName": last,
+                "sex": sex,
+                "rnvpChecked": raw.get("rnvpChecked", False),
+                "rnvpCheckMethod": raw.get("rnvpCheckMethod", ""),
+                "rnvpValidation": raw.get("rnvpValidation", ""),
+                "additionalFloor": "",
+            }
+        )
+    return addresses
 
 
 def pick_sender(addresses: list[dict], hint: str | None) -> dict:
@@ -209,23 +266,36 @@ def upload_pdf(
     postage_type: str,
     priority: int,
 ) -> dict:
-    """Upload one PDF and return the document descriptor returned by the server."""
+    """Upload one PDF and return the document descriptor returned by the server.
+
+    Field order and names mirror the SPA's multipart body exactly: La Poste's
+    backend rejects requests where the `fileDocument` part isn't surrounded
+    by the other metadata fields in the expected sequence.
+    """
     pages_count = _pdf_page_count(pdf_path)
     size = pdf_path.stat().st_size
-    fields = {
-        "name": pdf_path.name,
-        "fileDocument": (pdf_path.name, pdf_path.read_bytes(), "application/pdf"),
-        "documentPriority": str(priority),
-        "pagesCount": str(pages_count),
-        "postageType": postage_type,
-        "source": "upload",
-        "totalSize": str(size),
-        "sendingId": sending_id,
-        "frontPostageType": postage_type,
-    }
-    r = session.post(UPLOAD_URL, files=fields, timeout=120)
+
+    mp = CurlMime()
+    mp.addpart(name="name", data=pdf_path.name)
+    mp.addpart(
+        name="fileDocument",
+        filename=pdf_path.name,
+        content_type="application/pdf",
+        data=pdf_path.read_bytes(),
+    )
+    mp.addpart(name="documentPriority", data=str(priority))
+    mp.addpart(name="pagesCount", data=str(pages_count))
+    mp.addpart(name="postageType", data=postage_type)
+    mp.addpart(name="source", data="upload")
+    mp.addpart(name="totalSize", data=str(size))
+    mp.addpart(name="sendingId", data=sending_id)
+    mp.addpart(name="frontPostageType", data=postage_type)
+
+    r = session.post(UPLOAD_URL, multipart=mp, timeout=120)
     if not r.ok:
-        raise click.ClickException(f"Upload failed for {pdf_path.name}: {r.status_code} {r.text[:300]}")
+        raise click.ClickException(
+            f"Upload failed for {pdf_path.name}: {r.status_code} {r.text[:300]}"
+        )
     try:
         return r.json()
     except Exception:

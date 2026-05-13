@@ -658,34 +658,47 @@ def calc_price(
     return r.json()
 
 
-def _to_api_address(r: dict) -> dict:
-    """Translate our draft-shaped receiver to the API shape /recipients wants.
+def _to_api_address(r: dict, *, addr_type: str | None = None) -> dict:
+    """Translate our draft-shaped address to the API shape /recipients wants.
 
-    Matches the SPA's `normalizeLibAddressToBody`: `town` not `city`,
-    `postalCode` not `zipCode`, `pobox` not `additionalStreetName`,
-    `country: {isocode}` nested, civility-tokens are "M."/"Mme".
+    Mirrors the SPA's `normalizeLibAddressToBody` exactly:
+      - `line1` = street name (NOT the recipient's name — La Poste's API
+        uses postal line numbering)
+      - `town` not `city`, `postalCode` not `zipCode`
+      - `pobox` ← additionalStreetName, `building` ← additionalBuilding,
+        `appartment` (sic) ← additionalFloor
+      - `country: {isocode}` is a nested object
+      - `ceaId` (capital I), not `ceaid`
+      - `titleCode: "mr"/"mrs"` (the `title: "M."/"Mme"` field is layered
+        on top by sendReceiverAddress; we add it too for consistency)
     """
-    title = "M." if r.get("sex") == "MALE" else "Mme" if r.get("sex") == "FEMALE" else ""
-    return {
-        "title": title,
-        "firstName": r.get("firstName") or "",
-        "lastName": r.get("lastName") or "",
-        "companyName": r.get("companyName") or "",
-        "streetName": r.get("streetName") or "",
+    sex = r.get("sex")
+    title_code = "mr" if sex == "MALE" else "mrs" if sex == "FEMALE" else ""
+    title = "M." if sex == "MALE" else "Mme" if sex == "FEMALE" else ""
+    out: dict = {
+        "label": r.get("label"),
+        "country": {"isocode": r.get("country") or "FR"},
+        "line1": r.get("streetName") or "",
         "pobox": r.get("additionalStreetName") or "",
         "building": r.get("additionalBuilding") or "",
         "appartment": r.get("additionalFloor") or "",
         "remarks": r.get("additionalKeypad") or "",
         "postalCode": r.get("zipCode") or "",
+        "postalId": r.get("id"),
         "town": r.get("city") or "",
-        "country": {"isocode": r.get("country") or "FR"},
-        "b2b": r.get("isCompany", False),
-        "ceaid": r.get("ceaid"),
-        "ceaidLine6": r.get("ceaidLine6"),
-        "rnvpChecked": r.get("rnvpChecked", False),
-        "rnvpCheckMethod": r.get("rnvpCheckMethod", ""),
-        "rnvpValidation": r.get("rnvpValidation", ""),
+        "firstName": r.get("firstName") or "",
+        "lastName": r.get("lastName") or "",
+        "titleCode": title_code,
+        "title": title,
     }
+    if r.get("ceaid"):
+        out["ceaId"] = r["ceaid"]
+    if addr_type:
+        out["type"] = addr_type
+    if r.get("isCompany"):
+        out["companyName"] = r.get("companyName") or ""
+        out["receiver"] = r.get("service") or ""
+    return out
 
 
 def push_recipients(

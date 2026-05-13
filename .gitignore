@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+.uv/
+.envrc
+.idea/
+.vscode/
+*.log
+# never commit local configs even if they end up in this dir
+config.json

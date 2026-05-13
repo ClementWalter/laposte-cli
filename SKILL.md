@@ -1,122 +1,167 @@
 ---
 name: laposte-cli
-description: Send registered (LREL) or priority (LEL) mail via laposte.fr from the terminal using laposte_cli. Use when the user wants to send a paper letter, recommandé/AR, e-lettre rouge, or upload a PDF for La Poste to print + distribute. The CLI uploads PDF(s), RNVP-certifies recipient address(es), creates a cart entry, and opens the payment page in the browser for the user to confirm with a saved card. Every command supports --debug for HTTP traces.
+description: Send registered (LREL) or priority (LEL) French postal mail via laposte.fr from the terminal using `laposte_cli`. Use when the user wants to send a paper letter, a recommandé/AR, an e-lettre rouge, or upload one or more PDFs for La Poste to print + distribute. The CLI uploads PDF(s), RNVP-certifies recipient address(es), creates a cart entry, then opens https://www.laposte.fr/checkout/recapitulatif so the user can confirm payment in the browser with a saved card. Cookies are read live from the user's browser — no manual paste, no API key.
 ---
 
 # laposte-cli
 
-CLI on top of the laposte.fr "Courrier En Ligne" (CEL) back-end. PDF-only.
-Handoff payment: the CLI never sees the user's card — it opens
-`https://www.laposte.fr/checkout/recapitulatif` at the end so the user can
-pay with a saved card in the browser (3DS happens there as usual).
+CLI on top of laposte.fr's "Courrier En Ligne" (CEL) back-end. PDF only.
+**Handoff payment** — the CLI never sees or transmits card data; it stops
+at the payment page and the user clicks *Payer* themselves.
 
 ## When to use
 
 - "envoie cette lettre en recommandé à X"
-- "fais-moi un envoi de courrier postal pour ces 3 destinataires"
-- "génère le recommandé AR pour ce PDF"
-- "renvoie ce document à mon notaire avec suivi"
+- "fais-moi un envoi postal de ces 3 PDF pour mon notaire"
+- "génère un recommandé avec AR pour ce courrier"
+- "envoie ça en e-lettre rouge demain"
 
 ## When NOT to use
 
-- The user wants the *text editor* mode (write the body in the browser).
-  The website's editor flow is broken as of 2026-05-13 — use a separate
-  tool to render text to PDF first, then upload it.
-- The user wants to pay programmatically. The CLI stops at the payment
-  page on purpose (V1 = handoff). A future V2 will try Scellius
-  automation with saved cards, but it isn't implemented yet.
+- The user has only text (no PDF). The website's "Rédiger un texte" mode
+  is broken as of 2026-05-13 and the CLI doesn't support it. Render the
+  text to PDF first (e.g. via pandoc, libreoffice, or `weasyprint`),
+  then upload.
+- The user wants the CLI to pay automatically. V1 is handoff only —
+  payment lives in the browser. Do not attempt to bypass this.
 
-## Usage
+## Usage by an agent
 
-### One-time login
+### 1. Verify login state
+
+Before anything, run:
 
 ```bash
-laposte-cli login
+laposte-cli whoami
 ```
 
-Prompts the user to paste a `Copy as cURL` from DevTools while logged
-into laposte.fr. The CLI extracts the `Cookie:` header and stores it in
-`~/.config/laposte-cli/config.json` (mode 600). The `pa_user` cookie
-contains the numeric `userId` we need for all subsequent CEL calls.
+If it returns a `User ID:` line, the user is logged in and the CLI can
+read cookies from their browser. If it errors with "Not logged in",
+the user needs to:
 
-If `whoami` fails with "Not logged in", run `login` again — cookies may
-have expired (typically lasts a few weeks).
+1. Open https://www.laposte.fr in Chrome (or another supported browser:
+   firefox/safari/edge/brave/chromium/opera/arc) and log in.
+2. Run `laposte-cli login --browser <name>` once. On macOS Chrome the
+   first read may pop a Keychain prompt — the user accepts it once.
 
-### Send
+`whoami` after that should succeed. Agents should not try to bypass this
+step — there is no API key.
+
+### 2. List sender addresses (optional, for `--from`)
 
 ```bash
-laposte-cli send <pdf> [<pdf>...] --to "M Prenom Nom|street|cp ville" [options]
+laposte-cli addresses
+```
+
+Prints a table of the user's saved postal addresses with their IDs and
+labels. Useful for picking `--from <label>` (otherwise the primary
+address is used).
+
+### 3. Send
+
+```bash
+laposte-cli send <pdf> [<pdf>...] --to "Civ Prenom Nom|street|CP VILLE" [options]
 ```
 
 Required:
 - One or more PDF paths (positional, repeatable). Max 20 Mo per PDF.
-- `--to "Civ Prenom Nom|street|cp ville"`. Repeat for multiple recipients
-  (up to 100). The `|` is the field separator. Civility is `M` or `MME`.
+- One or more `--to` flags. The pipe `|` is the field separator. Format:
+  `"M Jean Dupont|1 rue de la Paix|75001 PARIS"`. Civility is `M` or
+  `MME` (defaults to `M` if missing). Up to 100 recipients per letter.
 
 Format / options:
-- `--format recommande|lettre-rouge` — LREL (default, J+3) or LEL (J+1).
-- `--ar` — Avis de réception (recommandé only, +1,25 €).
-- `--tracking` — Postal tracking (e-lettre rouge only, +0,50 €).
-- `--color` / `--bw` — Color print (+0,50 €) or B&W (default).
-- `--duplex` / `--simplex` — Recto-verso (default) or recto only.
-- `--from <id-or-label>` — Sender address; defaults to the primary one.
-  See `laposte-cli addresses` for the list.
-- `--no-sender` — Send with no return address.
-- `--date DD/MM/YYYY` — Deposit date. Default: today.
-- `--dry-run` — Upload + price only, don't create the cart.
-- `--no-open` — Don't open the browser at the end (still prints the URL).
+- `--format recommande` (default, LREL) | `lettre-rouge` (LEL, J+1).
+- `--ar` — *avis de réception* (LREL only, +1,25 €).
+- `--tracking` — postal tracking (LEL only, +0,50 €).
+- `--color` / `--bw` — color print (+0,50 €) or B&W (default).
+- `--duplex` / `--simplex` — recto-verso (default) or recto only.
+- `--from <id-or-label>` — sender address, default = primary.
+- `--no-sender` — omit the return address.
+- `--date DD/MM/YYYY` — deposit date, default = today.
+- `--dry-run` — upload + price only, don't create the cart.
+- `--no-open` — print the checkout URL but don't open it in a browser.
 
-### Inspect
+### Example: registered letter with AR to a notary
 
-- `laposte-cli whoami` — show the logged-in userId.
-- `laposte-cli addresses` — list saved sender addresses.
+```bash
+laposte-cli send acte.pdf annexes.pdf \
+  --to "MME Marie Durand|12 avenue Foch|75116 PARIS" \
+  --format recommande --ar
+```
 
-## Architecture notes (for future maintainers)
+### Example: e-lettre rouge with tracking, batch send
 
-### Auth
-Cookie-based, no API key. The CLI replays the raw `Cookie:` header on every
-request. WAF in front of laposte.fr does TLS fingerprinting, so we use
-`curl_cffi` with `impersonate="chrome131"`.
+```bash
+laposte-cli send invoice.pdf \
+  --to "M Client Alpha|1 rue X|75001 PARIS" \
+  --to "MME Cliente Beta|2 rue Y|75002 PARIS" \
+  --format lettre-rouge --tracking
+```
 
-### Address flow
-1. Free-text recipients are RNVP-certified via
-   `GET /cel/address/sercadia/check?streetName=…&place=CP+VILLE`.
-   The response includes the `ceaid` (La Poste's address code) and the
-   `rnvpValidation: "verified"` field that the cart creation needs.
-2. The optional `--from` looks up
-   `GET /cel/address/lpelPart/account/profiles/CURRENT/postal-addresses`
-   for the sender's saved addresses.
+## Expected output (success path)
 
-### Draft
-The SPA uses a *single* mutable draft state object keyed by `userId`,
-synced via `POST /cel/sending/lpelPart/{userId}` with the full JSON
-payload on every change. The server echoes the same shape back with
-computed prices. We build that object once and POST it once.
+```
+From: Courcelles — 83 BIS RUE DE COURCELLES 75017 PARIS
+Resolving 1 recipient(s)…
+  → M JEAN DUPONT — 1 RUE DE LA PAIX 75001 PARIS (ceaid=75101226VS)
+Uploading 1 PDF(s)…
+  → acte.pdf (4 page(s), id=50be610d)
+Draft id: b31df28f…
+Tarif : 8,60 € (8.596 EUR)
+Creating cart entry (server is generating PDFs, ~5s)…
+✓ Cart entry created (?).
 
-### Cart
-Materializing the draft into a real cart is a 3-step server-side dance:
-`POST /cel/.../e-service/cel/recipients`, then `/options`, then
-`/users/current/carts/current`. V1 sends empty JSON for all three —
-seems to work because the server reads state from the draft, but if it
-turns out the bodies are needed we'll fix that.
+Pay here: https://www.laposte.fr/checkout/recapitulatif
+```
 
-### Payment
-Out of scope. The handoff URL is hardcoded
-(`https://www.laposte.fr/checkout/recapitulatif`). The cookie
-`lpel_cart={code, guid}` is set by the server after cart creation and
-travels with the browser session.
+After this the user must visit (or have their browser opened to) that URL
+and click *Payer* with one of their saved cards. The CLI's job is done.
 
-## Error handling
+## Failure modes
 
-- 401/403 from any La Poste endpoint → cookies expired, re-run `login`.
-- 503 Backend fetch failed (varnish) → transient, retry.
-- SERCADIA returns no result → the address isn't RNVP-validatable; try a
-  different street/postal code.
-- Upload returns non-200 → PDF too large or wrong format. Limit is 20 Mo
-  per file, PDF/JPG/PNG only.
+| Symptom | What it means | Action |
+|---|---|---|
+| `Not logged in` | No supported browser session found | Tell user to log in to laposte.fr in their browser, then `laposte-cli login --browser <name>` |
+| `SERCADIA could not RNVP-certify` | The recipient address is not in La Poste's database | Recheck the spelling; try with the official postal address |
+| `Price calc failed: 500 ... sheetsCount null` | We forgot to populate page metrics | Bug — file an issue. Should not happen for PDF input. |
+| `Cart creation failed: 400 ... recipientId` | /recipients endpoint refused our shape | Re-check the `--to` syntax; report the address that failed |
+| HTTP 503 *Backend fetch failed* (Varnish) | Transient La Poste hiccup | Just retry |
+| `Upload failed: 400 ... SENDING_NOT_FOUND` | sendingId out of sync | Should self-recover; re-run |
 
-## Debug
+## After sending
 
-`laposte-cli --debug send …` enables verbose HTTP logging via stdlib
-`logging`. Combine with `curl_cffi`'s built-in tracing if you need
-the wire details.
+The cart sticks around for ~24h in `https://www.laposte.fr/checkout/recapitulatif`.
+If the user wants to cancel a queued cart, they can empty it in the browser
+(no CLI command for that yet — V3 territory).
+
+## Architecture (for maintenance)
+
+| Step | Endpoint |
+|---|---|
+| Auth | `browser_cookie3.chrome(domain_name="laposte.fr")` — read live every call |
+| Sender list | `GET /cel/address/lpelPart/account/profiles/CURRENT/postal-addresses` |
+| RNVP cert | `GET /cel/address/sercadia/check?streetName=&place={CP}+{VILLE}` |
+| Wipe draft | `DELETE /cel/sending/lpelPart/{userId}` |
+| Upload | `POST /cel/occ/.../e-service/cel/upload` (multipart, **omit sendingId** on first call) |
+| Sync state | `POST /cel/sending/lpelPart/{userId}` (full draft JSON) |
+| Recipients | `POST /cel/occ/.../e-service/cel/recipients` `{addresses, sendingId, postageType}` |
+| Price | `POST /cel/occ/.../e-service/cel/price` (celConfigurationWsDTO + sheetsCount) |
+| Cart | `POST /cel/occ/.../e-service/cel/users/current/carts/current` (addEServiceToCart item) |
+
+Gotchas worth knowing:
+- The CEL API uses postal *line-number* address naming (`line1` = street,
+  `town`, `postalCode`, `country: {isocode}`, `ceaId` capital I,
+  `titleCode: "mr"/"mrs"` + `title: "M."/"Mme"`). The translation lives in
+  `_to_api_address()` in the script.
+- `lpel_ftid_cel_part` / `lpel_ftid_chkt_part` / `lpel_ftid_ecom_part`
+  share a UUID — only the prefix differs.
+- The `lpel_cel` cookie tracks the *active* server-side draft; the CLI
+  ignores it and lets `/upload` allocate a fresh one each run.
+
+## Don't
+
+- Don't try to also drive the payment from the CLI. Tell the user the
+  payment is in their browser.
+- Don't paste cookies for the user from logs/transcripts; cookies rotate
+  and they're in the user's browser already.
+- Don't reuse old `sendingId` across runs — let the server allocate.

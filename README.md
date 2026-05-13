@@ -8,8 +8,9 @@ everything up to the payment page. It then hands off to your browser so you
 can pay with a saved card (and complete 3DS if your bank prompts for it) —
 the CLI never touches your CB.
 
-> Status: V1 (handoff payment). PDF upload only — text-editor mode is
-> currently broken on laposte.fr's side anyway. Tested on macOS with `uv`.
+> Status: V1 (handoff payment) — working end-to-end against the live API
+> as of 2026-05-13. PDF upload only — text-editor mode is currently broken
+> on laposte.fr's side anyway. Tested on macOS with `uv` + Chrome.
 
 ## Install
 
@@ -95,6 +96,23 @@ as usual. The total takes 5 seconds at most.
 
 The CLI **does not** and will not store, transmit, or read your card
 data — payment lives entirely in your browser.
+
+### Output you can expect
+
+```
+$ laposte-cli send acte.pdf --to "M Jean Dupont|12 av Foch|75116 PARIS" --format recommande --ar
+From: Courcelles — 83 BIS RUE DE COURCELLES 75017 PARIS
+Resolving 1 recipient(s)…
+  → M JEAN DUPONT — 12 AV FOCH 75116 PARIS (ceaid=75116222YE)
+Uploading 1 PDF(s)…
+  → acte.pdf (4 page(s), id=50be610d)
+Draft id: b31df28f…
+Tarif : 8,60 € (8.596 EUR)
+Creating cart entry (server is generating PDFs, ~5s)…
+✓ Cart entry created (?).
+
+Pay here: https://www.laposte.fr/checkout/recapitulatif
+```
 
 ## Why not text-editor mode?
 

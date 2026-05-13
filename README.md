@@ -100,13 +100,13 @@ data — payment lives entirely in your browser.
 ### Output you can expect
 
 ```
-$ laposte-cli send acte.pdf --to "M Jean Dupont|12 av Foch|75116 PARIS" --format recommande --ar
-From: Courcelles — 83 BIS RUE DE COURCELLES 75017 PARIS
+$ laposte-cli send acte.pdf --to "M Recipient Name|<street>|<cp> <city>" --format recommande --ar
+From: <label> — <street> <cp> <city>
 Resolving 1 recipient(s)…
-  → M JEAN DUPONT — 12 AV FOCH 75116 PARIS (ceaid=75116222YE)
+  → M RECIPIENT NAME — <street> <cp> <city> (ceaid=<10-char-RNVP-code>)
 Uploading 1 PDF(s)…
-  → acte.pdf (4 page(s), id=50be610d)
-Draft id: b31df28f…
+  → acte.pdf (4 page(s), id=<doc-uuid>)
+Draft id: <sending-uuid>…
 Tarif : 8,60 € (8.596 EUR)
 Creating cart entry (server is generating PDFs, ~5s)…
 ✓ Cart entry created (?).

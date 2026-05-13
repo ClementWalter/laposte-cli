@@ -329,7 +329,7 @@ def fetch_sender_addresses(session: requests.Session) -> list[dict]:
     for raw in raw_items:
         line1 = (raw.get("address") or {}).get("line1", "").strip()
         line4 = (raw.get("address") or {}).get("line4", "").strip()
-        # line1 looks like "M. CLEMENT WALTER" — split civility from names.
+        # line1 looks like "M. PRENOM NOM" — split civility from names.
         sex = "MALE"
         names = line1.split()
         if names and names[0].upper() in {"M.", "M", "MR", "MONSIEUR"}:

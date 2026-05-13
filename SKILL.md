@@ -81,11 +81,11 @@ Format / options:
 - `--dry-run` — upload + price only, don't create the cart.
 - `--no-open` — print the checkout URL but don't open it in a browser.
 
-### Example: registered letter with AR to a notary
+### Example: registered letter with AR (recipient provided by the user)
 
 ```bash
 laposte-cli send acte.pdf annexes.pdf \
-  --to "MME Marie Durand|12 avenue Foch|75116 PARIS" \
+  --to "<civility> <First> <Last>|<street>|<cp> <city>" \
   --format recommande --ar
 ```
 
@@ -93,20 +93,20 @@ laposte-cli send acte.pdf annexes.pdf \
 
 ```bash
 laposte-cli send invoice.pdf \
-  --to "M Client Alpha|1 rue X|75001 PARIS" \
-  --to "MME Cliente Beta|2 rue Y|75002 PARIS" \
+  --to "<civility> <First> <Last>|<street>|<cp> <city>" \
+  --to "<civility> <First> <Last>|<street>|<cp> <city>" \
   --format lettre-rouge --tracking
 ```
 
 ## Expected output (success path)
 
 ```
-From: Courcelles — 83 BIS RUE DE COURCELLES 75017 PARIS
+From: <label> — <street> <cp> <city>
 Resolving 1 recipient(s)…
-  → M JEAN DUPONT — 1 RUE DE LA PAIX 75001 PARIS (ceaid=75101226VS)
+  → <FULL NAME> — <street> <cp> <city> (ceaid=<10-char-RNVP-code>)
 Uploading 1 PDF(s)…
-  → acte.pdf (4 page(s), id=50be610d)
-Draft id: b31df28f…
+  → acte.pdf (4 page(s), id=<doc-uuid>)
+Draft id: <sending-uuid>…
 Tarif : 8,60 € (8.596 EUR)
 Creating cart entry (server is generating PDFs, ~5s)…
 ✓ Cart entry created (?).

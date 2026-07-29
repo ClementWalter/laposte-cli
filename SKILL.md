@@ -9,6 +9,24 @@ CLI on top of laposte.fr's "Courrier En Ligne" (CEL) back-end. PDF only.
 **Handoff payment** — the CLI never sees or transmits card data; it stops
 at the payment page and the user clicks *Payer* themselves.
 
+## How to invoke
+
+Invoke it as **`laposte`** — on `$PATH` via a symlink in `~/.local/bin` onto this
+repo's `bin/laposte`, so it always runs the current checkout: a `git pull`, or even
+an uncommitted edit, takes effect immediately with nothing to reinstall.
+
+```bash
+laposte whoami
+```
+
+Examples in this doc are written that way. If `laposte` is not on `$PATH`, run the
+bundled launcher `bin/laposte` resolved against this skill's own directory (PEP 723
+— `uv` resolves deps inline on first run), or link it once:
+
+```bash
+ln -sfn <skill-dir>/bin/laposte ~/.local/bin/laposte
+```
+
 ## When to use
 
 - "envoie cette lettre en recommandé à X"

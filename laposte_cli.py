@@ -13,9 +13,8 @@
 Drives the laposte.fr "Courrier En Ligne" (CEL) flow up to the payment page,
 then hands off to your browser to confirm payment with a saved card. PDF only.
 
-Auth is cookie-based: paste your laposte.fr browser cookies once via `login`
-and the CLI replays them on every CEL API call. Cookies live in
-~/.config/laposte-cli/config.json (mode 600).
+Auth is cookie-based: login imports an authorized browser session into the
+1Password broker, with a mode-600 working copy for offline recovery.
 """
 
 from __future__ import annotations
@@ -87,7 +86,37 @@ SUPPORTED_BROWSERS = {
 }
 
 
+
+def _auth_broker(action, payload=None):
+    """Keep credential bodies on pipes and suppress provider errors containing secrets."""
+    import subprocess
+    import json
+    try:
+        result = subprocess.run(
+            ["claudine-secret", "auth", action, "laposte"],
+            input=json.dumps(payload) if payload is not None else None,
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode not in (0, 3):
+            return None
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            return None
+        if action == "load" and result.returncode:
+            return None
+        return value
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
 def load_config() -> dict:
+    """Prefer broker pending or vault credentials over a legacy working copy."""
+    if CONFIG_FILE.with_suffix(".auth-pending").exists():
+        return _legacy_config()
+    return _auth_broker("load") or _legacy_config()
+
+
+def _legacy_config() -> dict:
     """Return stored config (preferred browser etc.), or empty dict."""
     if not CONFIG_FILE.exists():
         return {}
@@ -97,8 +126,15 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     """Persist config; chmod 600 since it may hold preferences."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.touch(mode=0o600, exist_ok=True)
+    CONFIG_FILE.chmod(0o600)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
     CONFIG_FILE.chmod(0o600)
+    pending = CONFIG_FILE.with_suffix(".auth-pending")
+    if _auth_broker("save", config) is None:
+        pending.touch(mode=0o600)
+    else:
+        pending.unlink(missing_ok=True)
 
 
 def get_browser_cookies(browser: str = "chrome") -> tuple[str, str]:
@@ -160,6 +196,8 @@ def require_login() -> dict:
     """
     cfg = load_config()
     browser = cfg.get("browser", "chrome")
+    if cfg.get("cookie_header") and cfg.get("userId"):
+        return {"cookies": cfg["cookie_header"], "userId": cfg["userId"], "sendingId": None, "browser": browser}
     try:
         jar = get_browser_jar(browser)
     except click.ClickException:
@@ -835,13 +873,12 @@ def login(browser: str) -> None:
     except Exception as exc:
         console.print(f"[yellow]Warning:[/yellow] could not ping La Poste: {exc}")
 
-    save_config({"browser": browser})
+    save_config({"browser": browser, "cookie_header": header, "userId": user_id})
     console.print(
         f"[green]✓[/green] Logged in as user [cyan]{user_id}[/cyan] via {browser}"
     )
     console.print(
-        f"  Preference saved to {CONFIG_FILE}. Cookies are read live from "
-        f"{browser} on each command — no copy/paste."
+        "  Session saved through the 1Password broker with a protected local working copy."
     )
 
 
@@ -1086,6 +1123,42 @@ def send(
     console.print(f"\n[bold]Pay here:[/bold] [cyan]{HANDOFF_URL}[/cyan]")
     if open_browser:
         webbrowser.open(HANDOFF_URL)
+
+
+
+@cli.command("auth-status")
+@click.option("--json", "as_json", is_flag=True, help="Emit secret-free metadata.")
+def auth_status(as_json):
+    """Report credential storage without contacting the provider. Example: auth-status --json."""
+    import json
+    metadata = _auth_broker("status") or {
+        "connector": "laposte", "account": "default", "source": "unavailable",
+        "configured": False, "pending": False, "last_sync": None,
+    }
+    if not metadata.get("configured") and CONFIG_FILE.exists():
+        metadata.update(source="legacy", configured=True)
+    metadata.update(session_scope="portable")
+    if CONFIG_FILE.with_suffix(".auth-pending").exists():
+        metadata.update(source="pending-local", configured=True, pending=True)
+    click.echo(json.dumps(metadata))
+
+
+@cli.command("auth-sync")
+def auth_sync():
+    """Move stored credentials into 1Password. Example: auth-sync."""
+    import json
+    local_pending = CONFIG_FILE.with_suffix(".auth-pending")
+    metadata = _auth_broker("save", _legacy_config()) if local_pending.exists() else _auth_broker("sync")
+    if metadata and local_pending.exists():
+        local_pending.unlink()
+    if not metadata or not metadata.get("configured"):
+        config = load_config()
+        if config and not config.get("cookie_header"):
+            header, user_id = get_browser_cookies(config.get("browser", "chrome"))
+            config.update(cookie_header=header, userId=user_id)
+        metadata = _auth_broker("save", config) if config else metadata
+    click.echo(json.dumps(metadata or {"connector": "laposte", "source": "unavailable", "pending": False}))
+    if not metadata or not metadata.get("configured") or metadata.get("pending"): raise click.exceptions.Exit(3)
 
 
 if __name__ == "__main__":

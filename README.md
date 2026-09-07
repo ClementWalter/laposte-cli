@@ -55,6 +55,11 @@ laposte-cli whoami       # prints userId + active CEL draft id
 laposte-cli addresses    # prints saved sender postal addresses
 ```
 
+If `addresses` reports a service outage, La Poste is returning its incident
+page from the address API; retry later. An HTTP 403 alone does not establish
+that your login has expired. For a new-login error, log in on laposte.fr and
+run `laposte login` to refresh the saved CLI session.
+
 ## Send a letter
 
 ```bash

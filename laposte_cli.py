@@ -353,9 +353,37 @@ def fetch_sender_addresses(session: requests.Session) -> list[dict]:
     city, isPrimary, label, firstName, lastName…) so callers don't have to
     know about the two representations.
     """
-    r = session.get(ADDRESSES_URL, timeout=15)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = session.get(ADDRESSES_URL, timeout=15)
+    except requests.RequestsError:
+        raise click.ClickException(
+            "Could not reach La Poste to fetch saved addresses. "
+            "Check your connection and try again."
+        ) from None
+    if r.status_code >= 400:
+        # La Poste also serves its outage page with 403; status alone is ambiguous.
+        if "Site indisponible - Incident en cours - La Poste" in r.text:
+            message = f"La Poste reports a service outage (HTTP {r.status_code}). Try again later."
+        elif r.status_code in (401, 412):
+            message = (
+                f"La Poste requires a new login (HTTP {r.status_code}). "
+                "Log in at https://www.laposte.fr, then run 'laposte login'."
+            )
+        elif r.status_code == 403:
+            message = (
+                "La Poste rejected the address request (HTTP 403). "
+                "Check access at https://www.laposte.fr; if login is required, "
+                "log in there and run 'laposte login'. Otherwise, try again later."
+            )
+        else:
+            message = f"Could not fetch saved addresses (HTTP {r.status_code}). Try again later."
+        raise click.ClickException(message)
+    try:
+        data = r.json()
+    except ValueError:
+        raise click.ClickException(
+            "La Poste returned an invalid address response. Try again later."
+        ) from None
 
     raw_items: list[dict] = []
     if isinstance(data, dict) and any(k.startswith("P-") for k in data):

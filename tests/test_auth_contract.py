@@ -1,26 +1,10 @@
 """Credential broker contract tests use synthetic sessions without provider access."""
-import importlib.machinery
-import importlib.util
-import json
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
+
 import pytest
 from click.testing import CliRunner
 
-@pytest.fixture
-def app(monkeypatch, tmp_path):
-    path = Path(__file__).resolve().parents[1] / "laposte_cli.py"
-    loader = importlib.machinery.SourceFileLoader("auth_contract_laposte", str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    monkeypatch.setattr(module, "CONFIG_FILE", tmp_path / "config.json")
-    if hasattr(module, "CONFIG_DIR"):
-        monkeypatch.setattr(module, "CONFIG_DIR", tmp_path)
-    if hasattr(module, "SESSION_BASE"):
-        monkeypatch.setattr(module, "SESSION_BASE", tmp_path / "session")
-    return module
 
 def test_load_prefers_broker(app, monkeypatch):
     monkeypatch.setattr(app, "_auth_broker", lambda *args: {"api_id": 1, "api_hash": "vault"})

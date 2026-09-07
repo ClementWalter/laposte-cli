@@ -196,8 +196,10 @@ def require_login() -> dict:
     """
     cfg = load_config()
     browser = cfg.get("browser", "chrome")
-    if cfg.get("cookie_header") and cfg.get("userId"):
-        return {"cookies": cfg["cookie_header"], "userId": cfg["userId"], "sendingId": None, "browser": browser}
+    # Shared vault sessions and browser imports use equivalent cookie-header fields.
+    header = cfg.get("cookie_header") or cfg.get("cookies")
+    if isinstance(header, str) and header and cfg.get("userId"):
+        return {"cookies": header, "userId": cfg["userId"], "sendingId": None, "browser": browser}
     try:
         jar = get_browser_jar(browser)
     except click.ClickException:

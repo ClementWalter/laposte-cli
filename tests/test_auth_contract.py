@@ -56,3 +56,15 @@ def test_vault_session_needs_no_browser(app, monkeypatch):
     monkeypatch.setattr(app, "_auth_broker", lambda *args: {"cookie_header": "session=synthetic", "userId": "123"})
     monkeypatch.setattr(app, "get_browser_jar", lambda *args: pytest.fail("browser access"))
     assert app.require_login()["cookies"] == "session=synthetic"
+
+
+def test_shared_cookie_session_needs_no_browser(app, monkeypatch):
+    monkeypatch.setattr(app, "_auth_broker", lambda *args: {"cookies": "session=synthetic", "userId": "123"})
+    monkeypatch.setattr(app, "get_browser_jar", lambda *args: pytest.fail("browser access"))
+    assert app.require_login()["cookies"] == "session=synthetic"
+
+
+def test_whoami_accepts_shared_cookie_session(app, monkeypatch):
+    monkeypatch.setattr(app, "_auth_broker", lambda *args: {"cookies": "session=synthetic", "userId": "123"})
+    monkeypatch.setattr(app, "get_browser_jar", lambda *args: pytest.fail("browser access"))
+    assert CliRunner().invoke(app.cli, ["whoami"]).exit_code == 0

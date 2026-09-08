@@ -65,8 +65,8 @@ def install(group, connector: str) -> None:
             auth_operations = {"login", "auth login", "auth-status", "auth status", "auth-sync", "auth sync"}
             if enabled and operation not in READS.get(connector, set()) | auth_operations:
                 raise click.ClickException(f"{connector} is read-only in OneBrain; this action is blocked")
-            if enabled and connector == "whatsapp" and operation == "listen" and kwargs.get("exec_cmd"):
-                raise click.ClickException("Listener commands are disabled while WhatsApp is read-only")
+            if enabled and operation == "listen" and kwargs.get("exec_cmd"):
+                raise click.ClickException("Listener commands are disabled while this connector is read-only")
             return callback(*args, **kwargs)
 
         guarded._onebrain_guard = True

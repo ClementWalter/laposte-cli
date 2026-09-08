@@ -188,23 +188,29 @@ def get_browser_jar(browser: str = "chrome"):
 
 
 def require_login() -> dict:
-    """Return a session bundle with cookies + userId pulled from the browser.
+    """Prefer current browser cookies for the configured account when available.
 
-    `cookies` is a CookieJar (not a header string) so curl_cffi can rotate
-    it from `Set-Cookie` responses. `sendingId` is the value of the
-    `lpel_cel` cookie — the active server-side draft handle.
+    Browser imports fall back to their saved session on hosts without that
+    browser login. Shared sessions without a browser preference stay headless.
     """
     cfg = load_config()
     browser = cfg.get("browser", "chrome")
     # Shared vault sessions and browser imports use equivalent cookie-header fields.
     header = cfg.get("cookie_header") or cfg.get("cookies")
+    saved = None
     if isinstance(header, str) and header and cfg.get("userId"):
-        return {"cookies": header, "userId": cfg["userId"], "sendingId": None, "browser": browser}
+        saved = {"cookies": header, "userId": cfg["userId"], "sendingId": None, "browser": browser}
+        if not cfg.get("browser"):
+            return saved
     try:
         jar = get_browser_jar(browser)
     except click.ClickException:
+        if saved:
+            return saved
         raise
     except Exception as exc:
+        if saved:
+            return saved
         raise click.ClickException(
             f"Could not read cookies from {browser}: {exc}. "
             "Run 'laposte-cli login --browser <name>' to pick a different one."
@@ -220,6 +226,9 @@ def require_login() -> dict:
                 pass
         elif c.name == "lpel_cel":
             sending_id = c.value
+    # A different browser account must not replace the saved sender identity.
+    if saved and user_id != saved["userId"]:
+        return saved
     if not user_id:
         raise click.ClickException(
             f"Not logged in to laposte.fr in {browser}. Open laposte.fr "
@@ -363,7 +372,10 @@ def fetch_sender_addresses(session: requests.Session) -> list[dict]:
     if r.status_code >= 400:
         # La Poste also serves its outage page with 403; status alone is ambiguous.
         if "Site indisponible - Incident en cours - La Poste" in r.text:
-            message = f"La Poste reports a service outage (HTTP {r.status_code}). Try again later."
+            message = (
+                f"La Poste returned its service-unavailable page (HTTP {r.status_code}). "
+                "Check your browser session or try again later."
+            )
         elif r.status_code in (401, 412):
             message = (
                 f"La Poste requires a new login (HTTP {r.status_code}). "

@@ -34,7 +34,7 @@ def response(app):
         (
             403,
             "<title>Site indisponible - Incident en cours - La Poste</title>",
-            "La Poste reports a service outage (HTTP 403). Try again later.",
+            "La Poste returned its service-unavailable page (HTTP 403). Check your browser session or try again later.",
         ),
         (
             503,
@@ -104,7 +104,11 @@ def address_server(app, monkeypatch):
     monkeypatch.setattr(
         app, "ADDRESSES_URL", f"http://127.0.0.1:{server.server_port}/addresses"
     )
-    monkeypatch.setattr(app, "require_login", lambda: {"cookies": "session=synthetic"})
+    monkeypatch.setattr(
+        app,
+        "_auth_broker",
+        lambda *args: {"cookies": "session=synthetic", "userId": "123"},
+    )
     try:
         yield reply
     finally:
@@ -121,7 +125,7 @@ def test_addresses_command_outage(app, address_server):
     result = CliRunner().invoke(app.cli, ["addresses"])
     assert (result.exit_code, result.output) == (
         1,
-        "Error: La Poste reports a service outage (HTTP 403). Try again later.\n",
+        "Error: La Poste returned its service-unavailable page (HTTP 403). Check your browser session or try again later.\n",
     )
 
 
@@ -134,3 +138,23 @@ def test_addresses_command_success(app, address_server, address_payload):
 def test_addresses_command_empty(app, address_server):
     result = CliRunner().invoke(app.cli, ["addresses"])
     assert (result.exit_code, result.output) == (0, "No saved addresses.\n")
+
+
+def test_addresses_command_with_browser_login(
+    app, address_server, address_payload, monkeypatch
+):
+    address_server["body"] = json.dumps(address_payload).encode()
+    monkeypatch.setattr(
+        app,
+        "_auth_broker",
+        lambda *args: {
+            "browser": "chrome",
+            "userId": "123",
+            "cookies": "session=stale",
+        },
+    )
+    jar = app.requests.Cookies()
+    jar.set("pa_user", json.dumps({"id": "123"}), domain=".laposte.fr")
+    monkeypatch.setattr(app, "get_browser_jar", lambda *args: jar.jar)
+    result = CliRunner().invoke(app.cli, ["addresses"])
+    assert (result.exit_code, "1 RUE DE LA PAIX" in result.output) == (0, True)

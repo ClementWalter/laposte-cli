@@ -55,10 +55,13 @@ laposte-cli whoami       # prints userId + active CEL draft id
 laposte-cli addresses    # prints saved sender postal addresses
 ```
 
-If `addresses` reports a service outage, La Poste is returning its incident
-page from the address API; retry later. An HTTP 403 alone does not establish
-that your login has expired. For a new-login error, log in on laposte.fr and
-run `laposte login` to refresh the saved CLI session.
+Browser-configured logins use current browser cookies for the same account,
+with the saved session as a fallback when that browser login is unavailable.
+Shared sessions without a browser preference use their saved cookies directly.
+
+La Poste's service-unavailable page can also appear when it rejects a stale
+CLI session. It does not establish an outage. Log in on laposte.fr and open
+Courrier en ligne before retrying `laposte addresses`.
 
 ## Send a letter
 

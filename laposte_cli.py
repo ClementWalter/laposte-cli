@@ -25,7 +25,7 @@ import logging
 import sys
 import webbrowser
 from pathlib import Path
-from urllib.parse import unquote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import browser_cookie3
 import click
@@ -448,6 +448,21 @@ def fetch_sender_addresses(session: requests.Session) -> list[dict]:
             }
         )
     return addresses
+
+
+def delete_sender_address(session: requests.Session, address_id: str) -> None:
+    """Delete one exact postal ID without retrying an unconfirmed write."""
+    try:
+        response = session.delete(f"{ADDRESSES_URL}/{quote(address_id, safe='')}", timeout=15)
+    except requests.RequestsError:
+        raise click.ClickException(
+            f"Could not confirm removal of {address_id}. "
+            "Run 'laposte addresses --json' before retrying."
+        ) from None
+    if not 200 <= response.status_code < 300 and response.status_code != 404:
+        raise click.ClickException(
+            f"Could not remove address {address_id} (HTTP {response.status_code})."
+        )
 
 
 def pick_sender(addresses: list[dict], hint: str | None) -> dict:
@@ -958,12 +973,19 @@ def logout(as_json: bool) -> None:
     click.echo(json.dumps({"authenticated": False}) if as_json else "Logged out of laposte on this device.")
 
 
-@cli.command()
-def addresses() -> None:
-    """List your saved sender addresses."""
+@cli.group(invoke_without_command=True)
+@click.option("--json", "as_json", is_flag=True, help="List addresses as JSON with full IDs.")
+@click.pass_context
+def addresses(ctx: click.Context, as_json: bool) -> None:
+    """List or remove saved sender addresses. Example: laposte addresses --json."""
+    if ctx.invoked_subcommand:
+        return
     cfg = require_login()
-    s = make_session(cfg["cookies"])
-    addrs = fetch_sender_addresses(s)
+    with make_session(cfg["cookies"]) as session:
+        addrs = fetch_sender_addresses(session)
+    if as_json:
+        click.echo(json.dumps(addrs))
+        return
     if not addrs:
         console.print("[yellow]No saved addresses.[/yellow]")
         return
@@ -978,6 +1000,36 @@ def addresses() -> None:
             "★" if a.get("isPrimary") else "",
         )
     console.print(table)
+
+
+@addresses.command("remove")
+@click.argument("address_id")
+@click.option("--dry-run", is_flag=True, help="Show the selected address without deleting it.")
+@click.option("--yes", is_flag=True, help="Confirm deletion of this exact address ID.")
+def addresses_remove(address_id: str, dry_run: bool, yes: bool) -> None:
+    """Remove one saved address by its full ID.
+
+    Example: laposte addresses remove <id> --dry-run
+    Use --yes to delete the selected address.
+    """
+    if not dry_run and not yes:
+        raise click.ClickException("Use --dry-run to inspect the address, or --yes to remove it.")
+    cfg = require_login()
+    with make_session(cfg["cookies"]) as session:
+        address = next((a for a in fetch_sender_addresses(session) if a["id"] == address_id), None)
+        if address is None:
+            click.echo(f"Address {address_id} is not saved; nothing to remove.")
+            return
+        if dry_run:
+            click.echo(json.dumps({"action": "remove", "dry_run": True, "address": address}))
+            return
+        delete_sender_address(session, address_id)
+        # A successful HTTP status alone does not prove the saved record is gone.
+        if any(a["id"] == address_id for a in fetch_sender_addresses(session)):
+            raise click.ClickException(
+                f"Address {address_id} is still present after removal; check La Poste before retrying."
+            )
+    click.echo(f"Removed address {address_id} ({address['label']}).")
 
 
 @cli.command()

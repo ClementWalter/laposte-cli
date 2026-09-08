@@ -80,6 +80,11 @@ Prints a table of the user's saved postal addresses with their IDs and
 labels. Useful for picking `--from <label>` (otherwise the primary
 address is used).
 
+Use `laposte addresses --json` for full IDs. To remove an address requested
+by the user, inspect `laposte addresses remove <id> --dry-run`, then run
+`laposte addresses remove <id> --yes`. Removal uses an exact ID and verifies
+that the entry is gone before reporting success.
+
 ### 3. Send
 
 ```bash

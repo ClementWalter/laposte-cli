@@ -82,6 +82,13 @@ La Poste's service-unavailable page can also appear when it rejects a stale
 CLI session. It does not establish an outage. Log in on laposte.fr and open
 Courrier en ligne before retrying `laposte addresses`.
 
+## Remove a saved address
+
+Use `laposte addresses --json` to obtain full address IDs. Preview a removal
+with `laposte addresses remove <id> --dry-run`, then use `--yes` to delete
+that exact entry. The CLI checks that the entry is gone before reporting
+success. An ID that is already absent is a no-op.
+
 ## Send a letter
 
 ```bash

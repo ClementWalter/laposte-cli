@@ -53,17 +53,22 @@ Before anything, run:
 laposte-cli whoami
 ```
 
-If it returns a `User ID:` line, the user is logged in and the CLI can
-read cookies from their browser. If it errors with "Not logged in",
+If it returns a `User ID:` line, the CLI has verified access with La Poste.
+If it errors with "Not logged in",
 the user needs to:
 
 1. Open https://www.laposte.fr in Chrome (or another supported browser:
-   firefox/safari/edge/brave/chromium/opera/arc) and log in.
+   firefox/safari/edge/brave/chromium/opera/arc), log in, and open Courrier en ligne.
 2. Run `laposte-cli login --browser <name>` once. On macOS Chrome the
    first read may pop a Keychain prompt — the user accepts it once.
 
-`whoami` after that should succeed. Agents should not try to bypass this
-step — there is no API key.
+`login` validates the session before saving it. `whoami` performs a live
+check; `auth-status` only reports credential storage. `login`, `logout`, and
+`whoami` support `--json` without exposing session cookies.
+
+`laposte logout` clears local credentials and prevents automatic login from
+the browser or vault until an explicit `laposte login` succeeds. Logout is
+local to this device; it does not revoke the browser or shared vault session.
 
 ### 2. List sender addresses (optional, for `--from`)
 

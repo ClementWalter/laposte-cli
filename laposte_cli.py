@@ -111,6 +111,8 @@ def _auth_broker(action, payload=None):
 
 def load_config() -> dict:
     """Prefer broker pending or vault credentials over a legacy working copy."""
+    if CONFIG_FILE.with_suffix(".logged-out").exists():
+        return {}
     if CONFIG_FILE.with_suffix(".auth-pending").exists():
         return _legacy_config()
     return _auth_broker("load") or _legacy_config()
@@ -123,18 +125,22 @@ def _legacy_config() -> dict:
     return json.loads(CONFIG_FILE.read_text())
 
 
-def save_config(config: dict) -> None:
-    """Persist config; chmod 600 since it may hold preferences."""
+def save_config(config: dict) -> bool:
+    """Persist a login with protected permissions and report completed vault sync."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.touch(mode=0o600, exist_ok=True)
     CONFIG_FILE.chmod(0o600)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
     CONFIG_FILE.chmod(0o600)
     pending = CONFIG_FILE.with_suffix(".auth-pending")
-    if _auth_broker("save", config) is None:
+    metadata = _auth_broker("save", config)
+    synced = bool(metadata and metadata.get("configured") and not metadata.get("pending"))
+    if not synced:
         pending.touch(mode=0o600)
     else:
         pending.unlink(missing_ok=True)
+    CONFIG_FILE.with_suffix(".logged-out").unlink(missing_ok=True)
+    return synced
 
 
 def get_browser_cookies(browser: str = "chrome") -> tuple[str, str]:
@@ -194,6 +200,8 @@ def require_login() -> dict:
     browser login. Shared sessions without a browser preference stay headless.
     """
     cfg = load_config()
+    if not cfg:
+        raise click.ClickException("Not logged in. Run 'laposte login'.")
     browser = cfg.get("browser", "chrome")
     # Shared vault sessions and browser imports use equivalent cookie-header fields.
     header = cfg.get("cookie_header") or cfg.get("cookies")
@@ -899,52 +907,55 @@ def cli(debug: bool) -> None:
     type=click.Choice(list(SUPPORTED_BROWSERS), case_sensitive=False),
     help="Browser to read cookies from. Default: chrome.",
 )
-def login(browser: str) -> None:
-    """Set the browser used to read laposte.fr cookies.
+@click.option("--json", "as_json", is_flag=True, help="Emit the login result as JSON.")
+def login(browser: str, as_json: bool) -> None:
+    """Import and validate your laposte.fr browser session.
 
-    No copy-paste required: we read your existing browser session directly.
-    On macOS Chrome, the first read may pop a Keychain prompt to allow access
-    to Chrome's encrypted cookie store.
+    Log in on laposte.fr and open Courrier en ligne in your browser first.
+    Example: laposte login --browser chrome
     """
     header, user_id = get_browser_cookies(browser)
-    s = make_session(header)
-    try:
-        r = s.get(PING_URL, timeout=10)
-        if not r.ok:
-            console.print(f"[yellow]Warning:[/yellow] ping returned {r.status_code}")
-    except Exception as exc:
-        console.print(f"[yellow]Warning:[/yellow] could not ping La Poste: {exc}")
-
-    save_config({"browser": browser, "cookie_header": header, "userId": user_id})
-    console.print(
-        f"[green]✓[/green] Logged in as user [cyan]{user_id}[/cyan] via {browser}"
-    )
-    console.print(
-        "  Session saved through the 1Password broker with a protected local working copy."
-    )
+    with make_session(header) as session:
+        fetch_sender_addresses(session)
+    synced = save_config({"browser": browser, "cookie_header": header, "userId": user_id})
+    if as_json:
+        click.echo(json.dumps({"authenticated": True, "user_id": user_id,
+                               "browser": browser, "sync_pending": not synced}))
+        return
+    click.echo(f"Logged in as user {user_id} via {browser}.")
+    if not synced:
+        click.echo("Session saved locally; vault sync is pending. Run 'laposte auth-sync'.")
 
 
 @cli.command()
-def whoami() -> None:
-    """Show the active user id (read live from the browser)."""
+@click.option("--json", "as_json", is_flag=True, help="Emit the verified identity as JSON.")
+def whoami(as_json: bool) -> None:
+    """Validate your session and show the logged-in account. Example: laposte whoami."""
     cfg = require_login()
-    console.print(f"User ID:   [cyan]{cfg['userId']}[/cyan]")
-    console.print(f"Browser:   {cfg['browser']}")
-    sending = cfg.get("sendingId") or "<none yet>"
-    console.print(f"lpel_cel:  {sending}")
+    with make_session(cfg["cookies"]) as session:
+        fetch_sender_addresses(session)
+    if as_json:
+        click.echo(json.dumps({"authenticated": True, "user_id": cfg["userId"],
+                               "browser": cfg["browser"]}))
+        return
+    click.echo(f"User ID: {cfg['userId']}")
+    click.echo(f"Browser: {cfg['browser']}")
 
 
 @cli.command()
-def logout() -> None:
-    """Remove the browser preference (does NOT log you out of laposte.fr)."""
-    if CONFIG_FILE.exists():
-        CONFIG_FILE.unlink()
-        console.print(
-            "[green]✓[/green] Cleared local preference. "
-            "To fully log out, do so in your browser."
-        )
-    else:
-        console.print("Nothing to clear.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the logout result as JSON.")
+def logout(as_json: bool) -> None:
+    """Log this CLI out on this device until the next login.
+
+    The browser and shared vault session remain available on other devices.
+    Example: laposte logout
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # The marker prevents browser or vault credentials from silently logging back in.
+    CONFIG_FILE.with_suffix(".logged-out").touch(mode=0o600, exist_ok=True)
+    CONFIG_FILE.unlink(missing_ok=True)
+    CONFIG_FILE.with_suffix(".auth-pending").unlink(missing_ok=True)
+    click.echo(json.dumps({"authenticated": False}) if as_json else "Logged out of laposte on this device.")
 
 
 @cli.command()
@@ -1173,6 +1184,11 @@ def send(
 def auth_status(as_json):
     """Report credential storage without contacting the provider. Example: auth-status --json."""
     import json
+    if CONFIG_FILE.with_suffix(".logged-out").exists():
+        click.echo(json.dumps({"connector": "laposte", "account": "default",
+                               "source": "logged-out", "configured": False,
+                               "pending": False, "session_scope": "portable"}))
+        return
     metadata = _auth_broker("status") or {
         "connector": "laposte", "account": "default", "source": "unavailable",
         "configured": False, "pending": False, "last_sync": None,
@@ -1189,9 +1205,11 @@ def auth_status(as_json):
 def auth_sync():
     """Move stored credentials into 1Password. Example: auth-sync."""
     import json
+    if CONFIG_FILE.with_suffix(".logged-out").exists():
+        raise click.ClickException("Not logged in. Run 'laposte login'.")
     local_pending = CONFIG_FILE.with_suffix(".auth-pending")
     metadata = _auth_broker("save", _legacy_config()) if local_pending.exists() else _auth_broker("sync")
-    if metadata and local_pending.exists():
+    if metadata and metadata.get("configured") and not metadata.get("pending") and local_pending.exists():
         local_pending.unlink()
     if not metadata or not metadata.get("configured"):
         config = load_config()

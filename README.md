@@ -40,10 +40,16 @@ laposte-cli login                  # defaults to chrome
 laposte-cli login --browser firefox
 ```
 
+`login` validates access to La Poste before saving the session. Failed
+validation keeps the existing login intact. When vault synchronization is
+unavailable, the validated session is saved locally and the command reports
+that synchronization is pending.
+
 On macOS Chrome, the first read pops a Keychain prompt to allow access to
-Chrome's encrypted cookie file — accept once and you're done. The CLI only
-stores your *browser preference* in `~/.config/laposte-cli/config.json`;
-cookies are re-read live on every command (so they're always fresh).
+Chrome's encrypted cookie file — accept once and you're done. The CLI stores
+the browser preference and session in `~/.config/laposte-cli/config.json`
+with owner-only permissions and synchronizes them through the vault broker.
+Cookies are re-read live for browser-configured logins on each command.
 
 Supported browsers: `chrome`, `firefox`, `safari`, `edge`, `brave`,
 `chromium`, `opera`, `arc`.
@@ -51,9 +57,22 @@ Supported browsers: `chrome`, `firefox`, `safari`, `edge`, `brave`,
 Verify:
 
 ```bash
-laposte-cli whoami       # prints userId + active CEL draft id
+laposte-cli whoami       # verifies access and shows the account
 laposte-cli addresses    # prints saved sender postal addresses
 ```
+
+All three authentication commands support `--json`:
+
+```bash
+laposte login --json
+laposte whoami --json
+laposte logout --json
+```
+
+`logout` removes the CLI's local credentials and keeps this device logged out
+until an explicit `login` succeeds, even if browser or vault credentials are
+still available. It does not sign out the website or revoke the shared vault
+session on other devices. Repeating `logout` is safe.
 
 Browser-configured logins use current browser cookies for the same account,
 with the saved session as a fallback when that browser login is unavailable.

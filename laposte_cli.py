@@ -1273,5 +1273,12 @@ def auth_sync():
     if not metadata or not metadata.get("configured") or metadata.get("pending"): raise click.exceptions.Exit(3)
 
 
+# Provider commands share the app and MCP execution policy.
+from pathlib import Path as _PolicyPath
+import sys as _policy_sys
+_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
+from onebrain_policy import install as _install_onebrain_policy
+_install_onebrain_policy(cli, 'laposte')
+
 if __name__ == "__main__":
     cli()

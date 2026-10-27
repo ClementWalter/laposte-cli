@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.3.3",
+#     "curl_cffi==0.15.0",
+#     "rich==15.0.0",
+#     "browser_cookie3==0.20.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Address removal requires an exact ID and verifies the server's resulting state."""
 
 import json
@@ -128,3 +142,10 @@ def test_remove_missing_address_is_idempotent(app, address_book):
 def test_addresses_json_exposes_full_ids(app, address_book):
     result = CliRunner().invoke(app.cli, ["addresses", "--json"])
     assert json.loads(result.output)[0]["id"] == "P-old"
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-q"]))

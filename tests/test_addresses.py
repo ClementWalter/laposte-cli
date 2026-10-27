@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.3.3",
+#     "curl_cffi==0.15.0",
+#     "rich==15.0.0",
+#     "browser_cookie3==0.20.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Address failures remain actionable without exposing response bodies or credentials."""
 
 import json
@@ -158,3 +172,10 @@ def test_addresses_command_with_browser_login(
     monkeypatch.setattr(app, "get_browser_jar", lambda *args: jar.jar)
     result = CliRunner().invoke(app.cli, ["addresses"])
     assert (result.exit_code, "1 RUE DE LA PAIX" in result.output) == (0, True)
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-q"]))

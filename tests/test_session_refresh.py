@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.3.3",
+#     "curl_cffi==0.15.0",
+#     "rich==15.0.0",
+#     "browser_cookie3==0.20.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Browser imports use current cookies without changing the configured account."""
 
 import json
@@ -51,3 +65,10 @@ def test_browser_import_falls_back_when_logged_out(app, saved_session, browser_j
 def test_browser_import_preserves_configured_account(app, saved_session, browser_jar):
     browser_jar[0].value = json.dumps({"id": "different-account"})
     assert app.require_login()["cookies"] == "session=old"
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-q"]))

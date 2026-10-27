@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.3.3",
+#     "curl_cffi==0.15.0",
+#     "rich==15.0.0",
+#     "browser_cookie3==0.20.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Credential broker contract tests use synthetic sessions without provider access."""
 import subprocess
 from types import SimpleNamespace
@@ -53,3 +67,10 @@ def test_whoami_accepts_shared_cookie_session(app, monkeypatch):
     monkeypatch.setattr(app, "_auth_broker", lambda *args: {"cookies": "session=synthetic", "userId": "123"})
     monkeypatch.setattr(app, "get_browser_jar", lambda *args: pytest.fail("browser access"))
     assert CliRunner().invoke(app.cli, ["whoami"]).exit_code == 0
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    sys.exit(pytest.main([__file__, "-q"]))

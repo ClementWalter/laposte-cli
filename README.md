@@ -1,5 +1,7 @@
 # laposte-cli
 
+**Visibility: public.**
+
 Send registered (LREL) or priority (LEL) mail from your terminal via
 [laposte.fr / Courrier En Ligne](https://www.laposte.fr/envoi-courrier-en-ligne).
 
@@ -20,14 +22,11 @@ declares its dependencies inline via [PEP 723](https://peps.python.org/pep-0723/
 ```bash
 git clone https://github.com/ClementWalter/laposte-cli.git
 cd laposte-cli
-./laposte_cli.py --help
+./bin/laposte --help
 ```
 
-Or add to your PATH:
-
-```bash
-ln -s "$PWD/laposte_cli.py" ~/.local/bin/laposte-cli
-```
+Put it on your PATH as `laposte` with `uv run claudine/scripts/link_clis.py`,
+which links `bin/laposte` into `~/.local/bin`.
 
 ## Login (no copy-paste)
 
@@ -36,8 +35,8 @@ directly from your browser's local store via
 [`browser_cookie3`](https://github.com/borisbabic/browser_cookie3).
 
 ```bash
-laposte-cli login                  # defaults to chrome
-laposte-cli login --browser firefox
+laposte login                  # defaults to chrome
+laposte login --browser firefox
 ```
 
 `login` validates access to La Poste before saving the session. Failed
@@ -57,8 +56,8 @@ Supported browsers: `chrome`, `firefox`, `safari`, `edge`, `brave`,
 Verify:
 
 ```bash
-laposte-cli whoami       # verifies access and shows the account
-laposte-cli addresses    # prints saved sender postal addresses
+laposte whoami       # verifies access and shows the account
+laposte addresses    # prints saved sender postal addresses
 ```
 
 All three authentication commands support `--json`:
@@ -92,7 +91,7 @@ success. An ID that is already absent is a no-op.
 ## Send a letter
 
 ```bash
-laposte-cli send invoice.pdf \
+laposte send invoice.pdf \
     --to "M Jean Dupont|1 rue de la Paix|75001 PARIS" \
     --format recommande --ar
 ```
@@ -134,7 +133,7 @@ data — payment lives entirely in your browser.
 ### Output you can expect
 
 ```
-$ laposte-cli send acte.pdf --to "M Recipient Name|<street>|<cp> <city>" --format recommande --ar
+$ laposte send acte.pdf --to "M Recipient Name|<street>|<cp> <city>" --format recommande --ar
 From: <label> — <street> <cp> <city>
 Resolving 1 recipient(s)…
   → M RECIPIENT NAME — <street> <cp> <city> (ceaid=<10-char-RNVP-code>)

@@ -2,11 +2,14 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "click>=8.1",
-#     "curl_cffi>=0.7",
-#     "rich>=13.0",
-#     "browser_cookie3>=0.20",
+#     "click==8.3.3",
+#     "curl_cffi==0.15.0",
+#     "rich==15.0.0",
+#     "browser_cookie3==0.20.1",
 # ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
 # ///
 """La Poste CLI — send registered (LREL) or priority (LEL) mail from the terminal.
 
@@ -905,7 +908,7 @@ def commit_to_cart(
 # --- CLI commands ------------------------------------------------------------
 
 
-@click.group()
+@click.group(epilog="\b\nExamples:\n  laposte whoami\n  laposte addresses --json\n  laposte send letter.pdf --to \"M Jean Dupont|1 rue de la Paix|75001 Paris\" --dry-run")
 @click.option("--debug", is_flag=True, help="Verbose logging of HTTP traffic.")
 def cli(debug: bool) -> None:
     """La Poste CLI — send a registered letter from your terminal."""
@@ -915,7 +918,7 @@ def cli(debug: bool) -> None:
     )
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  laposte login\n  laposte login --browser firefox --json")
 @click.option(
     "--browser",
     default="chrome",
@@ -942,7 +945,7 @@ def login(browser: str, as_json: bool) -> None:
         click.echo("Session saved locally; vault sync is pending. Run 'laposte auth-sync'.")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  laposte whoami\n  laposte whoami --json")
 @click.option("--json", "as_json", is_flag=True, help="Emit the verified identity as JSON.")
 def whoami(as_json: bool) -> None:
     """Validate your session and show the logged-in account. Example: laposte whoami."""
@@ -957,7 +960,7 @@ def whoami(as_json: bool) -> None:
     click.echo(f"Browser: {cfg['browser']}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  laposte logout\n  laposte logout --json")
 @click.option("--json", "as_json", is_flag=True, help="Emit the logout result as JSON.")
 def logout(as_json: bool) -> None:
     """Log this CLI out on this device until the next login.
@@ -973,7 +976,7 @@ def logout(as_json: bool) -> None:
     click.echo(json.dumps({"authenticated": False}) if as_json else "Logged out of laposte on this device.")
 
 
-@cli.group(invoke_without_command=True)
+@cli.group(invoke_without_command=True, epilog="\b\nExamples:\n  laposte addresses\n  laposte addresses --json\n  laposte addresses remove <address-id> --dry-run")
 @click.option("--json", "as_json", is_flag=True, help="List addresses as JSON with full IDs.")
 @click.pass_context
 def addresses(ctx: click.Context, as_json: bool) -> None:
@@ -1002,7 +1005,7 @@ def addresses(ctx: click.Context, as_json: bool) -> None:
     console.print(table)
 
 
-@addresses.command("remove")
+@addresses.command("remove", epilog="\b\nExamples:\n  laposte addresses remove <address-id> --dry-run\n  laposte addresses remove <address-id> --yes")
 @click.argument("address_id")
 @click.option("--dry-run", is_flag=True, help="Show the selected address without deleting it.")
 @click.option("--yes", is_flag=True, help="Confirm deletion of this exact address ID.")
@@ -1032,7 +1035,7 @@ def addresses_remove(address_id: str, dry_run: bool, yes: bool) -> None:
     click.echo(f"Removed address {address_id} ({address['label']}).")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  laposte send letter.pdf --to \"M Jean Dupont|1 rue de la Paix|75001 Paris\" --dry-run\n  laposte send letter.pdf --to \"M Jean Dupont|1 rue de la Paix|75001 Paris\" --ar\n  laposte send a.pdf b.pdf --format lettre-rouge --tracking --to \"Mme Marie Martin|2 avenue Foch|69006 Lyon\"")
 @click.argument("pdfs", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--to",
@@ -1231,7 +1234,7 @@ def send(
 
 
 
-@cli.command("auth-status")
+@cli.command("auth-status", epilog="\b\nExamples:\n  laposte auth-status\n  laposte auth-status --json")
 @click.option("--json", "as_json", is_flag=True, help="Emit secret-free metadata.")
 def auth_status(as_json):
     """Report credential storage without contacting the provider. Example: auth-status --json."""
@@ -1253,7 +1256,7 @@ def auth_status(as_json):
     click.echo(json.dumps(metadata))
 
 
-@cli.command("auth-sync")
+@cli.command("auth-sync", epilog="\b\nExamples:\n  laposte auth-sync")
 def auth_sync():
     """Move stored credentials into 1Password. Example: auth-sync."""
     import json
@@ -1272,13 +1275,6 @@ def auth_sync():
     click.echo(json.dumps(metadata or {"connector": "laposte", "source": "unavailable", "pending": False}))
     if not metadata or not metadata.get("configured") or metadata.get("pending"): raise click.exceptions.Exit(3)
 
-
-# Provider commands share the app and MCP execution policy.
-from pathlib import Path as _PolicyPath
-import sys as _policy_sys
-_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
-from onebrain_policy import install as _install_onebrain_policy
-_install_onebrain_policy(cli, 'laposte')
 
 if __name__ == "__main__":
     cli()

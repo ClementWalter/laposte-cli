@@ -2,6 +2,8 @@
 
 **Visibility: public.**
 
+**Extension: not shipped** as a Claude Desktop extension: sending mail ends in a payment page, which stays a hands-on browser step.
+
 Send registered (LREL) or priority (LEL) mail from your terminal via
 [laposte.fr / Courrier En Ligne](https://www.laposte.fr/envoi-courrier-en-ligne).
 
